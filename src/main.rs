@@ -2,11 +2,16 @@ mod measurements;
 
 use crate::measurements::MeasurementWindow;
 use eframe::egui;
-
+use std::time::{Instant, Duration};
+use std::io::BufReader;
 use std::io::BufRead;
 use std::sync::*;
+use serialport::*;
 use std::thread;
 use tracing::{error, info, warn};
+use std::f64;
+use std::any::type_name;
+use clap::{arg, Parser};
 
 pub struct MonitorApp {
     include_y: Vec<f64>,
@@ -14,10 +19,11 @@ pub struct MonitorApp {
 }
 
 impl MonitorApp {
-    fn new(look_behind: usize) -> Self {
+    fn new(look_behind: usize, channels: usize) -> Self {
         Self {
             measurements: Arc::new(Mutex::new(MeasurementWindow::new_with_look_behind(
                 look_behind,
+                channels
             ))),
             include_y: Vec::new(),
         }
@@ -40,11 +46,18 @@ impl eframe::App for MonitorApp {
             for y in self.include_y.iter() {
                 plot = plot.include_y(*y);
             }
-
             plot.show(ui, |plot_ui| {
                 plot_ui.line(egui::plot::Line::new(
-                    self.measurements.lock().unwrap().plot_values(),
-                ));
+                    self.measurements.lock().unwrap().plot_values(0),
+                )
+                    .stroke(egui::Stroke::new(2.0, egui::Color32::LIGHT_RED))
+                );
+
+                plot_ui.line(egui::plot::Line::new(
+                    self.measurements.lock().unwrap().plot_values(1),
+                )
+                    .stroke(egui::Stroke::new(2.0, egui::Color32::LIGHT_BLUE))
+                );
             });
         });
         // make it always repaint. TODO: can we slow down here?
@@ -52,7 +65,23 @@ impl eframe::App for MonitorApp {
     }
 }
 
-use clap::Parser;
+trait DataInputStream {
+    fn index(&self, ix: usize) -> Option<(f64, f64)>;
+}
+
+struct SineInput;
+
+struct 
+
+impl DataInputStream for SineInput {
+    fn index(&self, ix: usize) -> Option<(f64, f64)> {
+        let x = (ix as f64 / 10.0);
+        let y = (ix as f64 / 10.0).sin();
+
+        Some((x, y))
+    }
+}
+
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -67,62 +96,80 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
+    /*
+    let port = "COM3";
+    let baud_rate = 9600;
+    let ports = serialport::available_ports().expect("No ports found!");
+    let mut port = serialport::new(port, baud_rate)
+        .timeout(Duration::from_millis(10))
+        .open()
+        .expect("Failed to open port");
 
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(tracing::Level::TRACE)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    let mut reader = BufReader::new(port);
+    let mut my_str = String::new();
+    loop {
+        let pstring = reader.read_line(&mut my_str);
+        let payload = match pstring {
+            Ok(_) => {
+                let value = my_str
+                    .trim()
+                    .split_whitespace()
+                    .map(|s| s.parse().unwrap())
+                    .collect::<Vec<_>>();
+                value
+            }
+            Err(e) => {
+                eprintln!("Error reading line: {}", e);
+                Vec::<i32>::new()
+            }
+        };
+        // Process the payload or do something with it
 
-    let mut app = MonitorApp::new(args.window_size);
+        // Clear the string for the next iteration
+        my_str.clear();
+    }
+    */
 
-    app.include_y = args.include_y;
-
+    let mut app = MonitorApp::new(20, 2);
     let native_options = eframe::NativeOptions::default();
-
     let monitor_ref = app.measurements.clone();
+    let t_interval: u64 = 5;
+
+    const sis: SineInput = SineInput;
 
     thread::spawn(move || {
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(s) => {
-                    let parts = s.split(' ').collect::<Vec<&str>>();
-                    if parts.len() != 2 {
-                        warn!("Need exactly two parts: {}", s);
-                        continue;
-                    }
-
-                    let x = parts.first().expect("Have 2 parts");
-                    let y = parts.last().expect("Have 2 parts");
-
-                    let x = match x.parse::<f64>() {
-                        Ok(value) => value,
-                        _ => {
-                            warn!("Failed to parse {}", x);
-                            continue;
-                        }
-                    };
-
-                    let y = match y.parse::<f64>() {
-                        Ok(value) => value,
-                        _ => {
-                            warn!("Failed to parse {}", x);
-                            continue;
-                        }
-                    };
+       //let stdin = std::io::stdin();
+        let mut count: i32 = 0;
+        let mut start = Instant::now();
+        for i in 0.. {
+            // Load points from sinusoid data input stream
+            match sis.index(i) {
+                Some(value) => {
+                    monitor_ref
+                        .lock()
+                        .unwrap()
+                        .add(0, measurements::Measurement::new(value.0.clone(), value.1.clone()));
 
                     monitor_ref
                         .lock()
                         .unwrap()
-                        .add(measurements::Measurement::new(x, y));
+                        .add(1, measurements::Measurement::new((value.0).clone() , (value.1.clone())*(value.1.clone())));
                 }
                 _ => {
-                    error!("Failed to read line");
-                    break;
+                    warn!("Could not read from {} at index {}", type_name::<SineInput>(), i);
                 }
+            };
+
+            if start.elapsed() < Duration::from_secs(t_interval) {
+                count += 1;
+            } else {
+                println!("Points per second: {}", count / t_interval as i32);
+                count = 0;
+                start = Instant::now();
             }
+            thread::sleep(Duration::from_millis(1))
         }
+
     });
 
     info!("Main thread started");

@@ -1,41 +1,53 @@
 use std::collections::VecDeque;
+use tracing::warn;
 
 pub type Measurement = egui::plot::PlotPoint;
 
 #[derive(Debug)]
 pub struct MeasurementWindow {
-    pub values: VecDeque<Measurement>,
+    // Values is a vector of vecdeques. The first dimension (non-deque) corresponds to each DataInputStream class
+    // The second data from the deque corresponds to the plottable data
+    pub values: Vec<VecDeque<Measurement>>,
     pub look_behind: usize,
+    pub channels: usize,
 }
 
 impl MeasurementWindow {
-    pub fn new_with_look_behind(look_behind: usize) -> Self {
+    pub fn new_with_look_behind(look_behind: usize, channels: usize) -> Self {
         Self {
-            values: VecDeque::new(),
+            values: vec![VecDeque::new(); channels],
             look_behind,
+            channels,
         }
     }
 
-    pub fn add(&mut self, measurement: Measurement) {
-        if let Some(last) = self.values.back() {
-            if measurement.x < last.x {
-                self.values.clear()
-            }
-        }
+    pub fn add(&mut self, channel: usize, measurement: Measurement) {
+        // Test the existence of the channel
+        match self.values.get_mut(channel) {
+            Some(ch) => {
+                if let Some(last) = ch.back() {
+                    if measurement.x < last.x {
+                        ch.clear();
+                    }
+                }
+                ch.push_back(measurement);
 
-        self.values.push_back(measurement);
-
-        let limit = self.values.back().unwrap().x - (self.look_behind as f64);
-        while let Some(front) = self.values.front() {
-            if front.x >= limit {
-                break;
+                let limit = measurement.x - (self.look_behind as f64);
+                while let Some(front) = ch.front() {
+                    if front.x >= limit {
+                        break;
+                    }
+                    ch.pop_front();
+                }
             }
-            self.values.pop_front();
+            None => {
+                warn!("Channel {} is out of bounds for plot with {} data streams", channel, self.values.len())
+            }
         }
     }
 
-    pub fn plot_values(&self) -> egui::plot::PlotPoints {
-        egui::plot::PlotPoints::Owned(Vec::from_iter(self.values.iter().copied()))
+    pub fn plot_values(&self, channel: usize) -> egui::plot::PlotPoints {
+        egui::plot::PlotPoints::Owned(Vec::from_iter(self.values[channel].iter().copied()))
     }
 }
 
@@ -54,7 +66,7 @@ mod test {
     fn appends_one_value() {
         let mut w = MeasurementWindow::new_with_look_behind(100);
 
-        w.add(Measurement::new(10.0, 20.0));
+        w.add(0, Measurement::new(10.0, 20.0));
         assert_eq!(
             w.values.into_iter().eq(vec![Measurement::new(10.0, 20.0)]),
             true
@@ -65,9 +77,9 @@ mod test {
     fn clears_on_out_of_order() {
         let mut w = MeasurementWindow::new_with_look_behind(100);
 
-        w.add(Measurement::new(10.0, 20.0));
-        w.add(Measurement::new(20.0, 30.0));
-        w.add(Measurement::new(19.0, 100.0));
+        w.add(0, Measurement::new(10.0, 20.0));
+        w.add(0, Measurement::new(20.0, 30.0));
+        w.add(0, Measurement::new(19.0, 100.0));
         assert_eq!(
             w.values.into_iter().eq(vec![Measurement::new(19.0, 100.0)]),
             true
@@ -79,7 +91,7 @@ mod test {
         let mut w = MeasurementWindow::new_with_look_behind(100);
 
         for x in 1..=20 {
-            w.add(Measurement::new((x as f64) * 10.0, x as f64));
+            w.add(0, Measurement::new((x as f64) * 10.0, x as f64));
         }
 
         assert_eq!(
