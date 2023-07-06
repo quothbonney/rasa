@@ -17,13 +17,13 @@ use std::any::type_name;
 use clap::{arg, Parser};
 
 macro_rules! add_measurement {
-    ($monitor_ref:expr, $value:expr) => {
+    ($monitor_ref:expr, $value:expr, $channel:expr) => {
         {
             let value = $value;
             $monitor_ref
                 .lock()
                 .unwrap()
-                .add(0, measurements::Measurement::new(value.0.clone(), value.1.clone()));
+                .add($channel, measurements::Measurement::new(value.0.clone(), value.1.clone()));
         }
     };
 }
@@ -53,7 +53,7 @@ fn main() {
 
 
         for line in reader.lines() {
-            let vals: Option<(f64, f64)>;
+            let vals: Option<((f64, f64), (f64, f64))>;
             match line {
                 Ok(line) => {
                     // Here you can parse the line as per your serialization format.
@@ -63,7 +63,10 @@ fn main() {
                         .filter_map(|num| num.parse::<i32>().ok())
                         .collect();
                     println!("{:?}", numbers);
-                    vals = Some((index as f64 / 10.0, numbers[0] as f64));
+                    vals = Some((
+                        (index as f64 / 10.0, numbers[0] as f64),
+                        (index as f64 / 10.0, numbers[1] as f64),
+                    ));
                     thread::sleep(Duration::from_millis(1));
                 }
                 Err(err) => {
@@ -74,7 +77,8 @@ fn main() {
 
             match vals {
                 Some(value) => {
-                    add_measurement!(monitor_ref, value);
+                    add_measurement!(monitor_ref, value.0, 0);
+                    add_measurement!(monitor_ref, value.1, 1);
                 }
                 _ => {
                     warn!("Could not read from input stream at index {}", index);

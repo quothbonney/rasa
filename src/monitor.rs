@@ -59,6 +59,7 @@ impl eframe::App for MonitorApp {
 
             plot.show(ui, |plot_ui| {
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_GREEN, self.measurements, 0);
+                add_plot_line!(plot_ui, egui::Color32::LIGHT_RED, self.measurements, 1);
             });
         });
         // make it always repaint. TODO: can we slow down here?
