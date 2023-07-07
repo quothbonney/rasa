@@ -31,12 +31,11 @@ macro_rules! add_measurement {
 
 fn main() {
 
-    let mut app = MonitorApp::new(20, 2);
+    let mut app = MonitorApp::new(4, 2);
     let native_options = eframe::NativeOptions::default();
     let monitor_ref = app.measurements.clone();
     let t_interval: u64 = 5;
 
-    let mut index = 1i32;
     let port = "COM3";
     let baud_rate = 9600;
     let ports = serialport::available_ports().expect("No ports found!");
@@ -44,13 +43,17 @@ fn main() {
 
     let shared_var: Arc<RwLock<((f64, f64), (f64, f64))>> = Arc::new(RwLock::new(((0.0, 0.0), (0.0, 0.0))));
 
-    let port = serialport::new(port, baud_rate)
-        .timeout(Duration::from_millis(10))
-        .open()
-        .expect("Failed to open port");
+
 
     let (tx, rx) = mpsc::channel();
-    let writer = thread::spawn(move || {
+
+    let photometery_writer = thread::spawn(move || {
+        let mut index = 1i32;
+        let port = serialport::new(port, baud_rate)
+            .timeout(Duration::from_millis(10))
+            .open()
+            .expect("Failed to open port");
+
         let reader = std::io::BufReader::new(port);
         for line in reader.lines() {
             match line {
@@ -81,6 +84,28 @@ fn main() {
     });
 
 
+/*
+    let test_writer = thread::spawn(move || {
+        //let reader = std::io::BufReader::new(port);
+        let mut ix = 1i32;
+        loop {
+            let y: f64 = match ix % 100 {
+                0 => 5.0,
+                _ => (ix as f64).sin()
+            };
+            let num = (
+                (ix as f64 / 100.0, y),
+                (ix as f64 / 100.0, y*y),
+            );
+            //println!("{:?}", num);
+            tx.send(num).unwrap();
+            thread::sleep(Duration::from_millis(1));
+            ix += 1;
+        }
+    });
+
+ */
+
     let reader = thread::spawn(move || {
         loop {
             let mut last_received = None;
@@ -96,7 +121,6 @@ fn main() {
                 add_measurement!(monitor_ref, val.1, 1);
             }
 
-            thread::sleep(Duration::from_millis(1));
         }
     });
 
