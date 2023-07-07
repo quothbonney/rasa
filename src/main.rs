@@ -5,7 +5,7 @@ use crate::monitor::MonitorApp;
 use crate::measurements::MeasurementWindow;
 use eframe::egui;
 use std::time::{Instant, Duration};
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::io::BufRead;
 use std::collections::VecDeque;
 use std::sync::*;
@@ -33,7 +33,19 @@ enum InputStreams {
     PhotometryStream
 }
 
+fn vector_average(vec: &Vec<f64, f64>) -> (f64, f64) {
+    let (sum0, count0) = vec.iter()
+        .filter_map(|inner| inner.get(0))  // get first element, if it exists
+        .fold((0.0, 0), |(sum, count), &val| (sum + val, count + 1)); // sum values and count elements
 
+    let (sum1, count1) = vec.iter()
+        .filter_map(|inner| inner.get(1))  // get first element, if it exists
+        .fold((0.0, 0), |(sum, count), &val| (sum + val, count + 1)); // sum values and count elements
+    let av = (sum0 / (count0 as f64), (sum1 / (count1 as f64)));
+    av
+}
+
+fn io_ports()
 
 fn main() {
 
@@ -42,7 +54,7 @@ fn main() {
     let monitor_ref = app.measurements.clone();
     let t_interval: u64 = 5;
 
-    let port = "COM4";
+    let portname = "COM4";
     let baud_rate = 115200;
     let ports = serialport::available_ports().expect("No ports found!");
     println!("{:?}", ports);
@@ -50,6 +62,16 @@ fn main() {
     // Data read/write channel
     let (tx, rx) = mpsc::channel();
     let active_thread = InputStreams::PhotometryStream;
+
+
+
+    let write_to_port = |port: &mut Box<dyn SerialPort>, character: u8| {
+        let bytes_written = port.write(&[character]);
+        match bytes_written {
+            Ok(bytes) => println!("Wrote {} bytes", bytes),
+            Err(e) => eprintln!("Failed to write to port: {}", e),
+        }
+    };
 
     match active_thread {
         InputStreams::TestStream => {
@@ -77,15 +99,21 @@ fn main() {
             });
         }
         InputStreams::PhotometryStream => {
+            let output_port = serialport::new("COM4", baud_rate)
+                .timeout(Duration::from_millis(10))
+                .open()
+                .expect("Failed to open port");
+
+            let mut input_port = serialport::new("COM5", baud_rate)
+                .timeout(Duration::from_millis(10))
+                .open()
+                .expect("Failed to open port");
+
             let vec_mutex = Mutex::new(Vec::new());
             thread::spawn(move || {
                 let mut index = 1i32;
-                let port = serialport::new(port, baud_rate)
-                    .timeout(Duration::from_millis(10))
-                    .open()
-                    .expect("Failed to open port");
 
-                let reader = std::io::BufReader::new(port);
+                let reader = std::io::BufReader::new(output_port);
                 let start = Instant::now();
                 let mut sec_start = Instant::now();
                 let mut old_average = (0f64, 0f64);
@@ -113,19 +141,11 @@ fn main() {
                                 let mut vec = vec_mutex.lock().unwrap();
                                 vec.push(numbers);
                                 if sec_start.elapsed() > Duration::from_secs(1) {
-
                                     sec_start = Instant::now();
-                                    let (sum0, count0) = vec.iter()
-                                        .filter_map(|inner| inner.get(0))  // get first element, if it exists
-                                        .fold((0.0, 0), |(sum, count), &val| (sum + val, count + 1)); // sum values and count elements
-
-                                    let (sum1, count1) = vec.iter()
-                                        .filter_map(|inner| inner.get(1))  // get first element, if it exists
-                                        .fold((0.0, 0), |(sum, count), &val| (sum + val, count + 1)); // sum values and count elements
-
-                                    old_average = (sum0 / (count0 as f64), (sum1 / (count1 as f64)));
+                                    old_average = vector_average(&vec.unwrap());
                                     println!("Average: {:?}", old_average);
                                     vec.clear();
+                                    //write_to_port(&mut input_port, b'A');
                                 }
                             }
                             index += 1;
