@@ -25,6 +25,7 @@ macro_rules! add_plot_line {
 pub struct MonitorApp {
     pub include_y: Vec<f64>,
     pub  measurements: Arc<Mutex<MeasurementWindow>>,
+    pub  feedback: Vec<f64>,
 }
 
 impl MonitorApp {
@@ -35,6 +36,7 @@ impl MonitorApp {
                 channels
             ))),
             include_y: Vec::new(),
+            feedback: Vec::new(),
         }
     }
 }
@@ -56,12 +58,16 @@ impl eframe::App for MonitorApp {
                 plot = plot.include_y(*y);
             }
 
-
             plot.show(ui, |plot_ui| {
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_GREEN, self.measurements, 0);
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_RED, self.measurements, 1);
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 2);
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 3);
+
+                // Add vertical line. Replace 'x_value' with the x value where you want the line.
+                // You should also replace 'y_min' and 'y_max' with the minimum and maximum y values of your plot.
+                //let vertical_line = vec![(2.0, -5.0), (2.0, 5.0)];
+                //plot_ui.line(egui::plot::Line::new(egui::plot::Values::from_values_iter(vertical_line.into_iter())).color(egui::Color32::BLACK));
             });
         });
         // make it always repaint. TODO: can we slow down here?
