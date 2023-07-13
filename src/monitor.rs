@@ -1,6 +1,5 @@
 use crate::measurements::MeasurementWindow;
 use eframe::egui;
-use std::time::{Instant, Duration};
 use std::io::BufReader;
 use std::io::BufRead;
 use std::sync::*;
