@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 use std::f64;
 use std::any::type_name;
 use clap::{arg, Parser};
+use egui::plot::*;
 
 macro_rules! add_plot_line {
     ($plot_ui:expr, $color:expr, $data:expr, $channel:expr) => {
@@ -38,6 +39,10 @@ impl MonitorApp {
             feedback: Vec::new(),
         }
     }
+
+    pub fn update_rect(&mut self) {
+        //self.measurements.lock().unwrap().values
+    }
 }
 
 impl eframe::App for MonitorApp {
@@ -63,6 +68,10 @@ impl eframe::App for MonitorApp {
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 2);
                 add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 3);
 
+                let series: PlotPoints = PlotPoints::new(self.measurements.lock().unwrap().rectpoints.clone());
+                let poly = Polygon::new(series);
+                plot_ui.polygon(poly);
+                //plot_ui.polygon()
                 // Add vertical line. Replace 'x_value' with the x value where you want the line.
                 // You should also replace 'y_min' and 'y_max' with the minimum and maximum y values of your plot.
                 //let vertical_line = vec![(2.0, -5.0), (2.0, 5.0)];

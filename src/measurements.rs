@@ -10,6 +10,7 @@ pub struct MeasurementWindow {
     pub values: Vec<VecDeque<Measurement>>,
     pub look_behind: usize,
     pub channels: usize,
+    pub  rectpoints: Vec<[f64; 2]>,
 }
 
 impl MeasurementWindow {
@@ -18,7 +19,12 @@ impl MeasurementWindow {
             values: vec![VecDeque::new(); channels],
             look_behind,
             channels,
+            rectpoints: vec![[0.0; 2]; 4],
         }
+    }
+
+    pub fn update_rect(&mut self, rectp: Vec<[f64; 2]>) {
+        self.rectpoints = rectp;
     }
 
     pub fn add(&mut self, channel: usize, measurement: Measurement) {

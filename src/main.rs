@@ -6,6 +6,7 @@ mod util;
 mod threadedchannel;
 
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::Path;
 use std::fs::{File, OpenOptions};
@@ -22,9 +23,9 @@ use std::io::{Write, BufRead};
 use std::sync::*;
 use serialport::*;
 use std::thread;
-use tracing::{error, info, warn};
+use tracing::{error, info, debug, warn};
 use clap::{arg, Parser};
-use tch::{CModule, Tensor, Kind};
+use tch::{IndexOp, CModule, Tensor, Kind};
 
 macro_rules! add_measurement {
     ($monitor_ref:expr, $value:expr, $channel:expr) => {
@@ -38,7 +39,7 @@ macro_rules! add_measurement {
     };
 }
 
-const STDDEV: u32 = 50;
+const STDDEV: f64 = 1.0;
 
 enum InputStreams {
     TestStream,
@@ -46,28 +47,30 @@ enum InputStreams {
     OrnsteinStream
 }
 
-fn normalize_array(v0_: &Vec<f64>, v1_: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
-    let mut v0 = v0_.clone();
-    let mut v1 = v1_.clone();
+fn normalize_array(lower_: &Vec<f64>, high_: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+    let mut v0 = lower_.clone();
+    let mut v1 = high_.clone();
+    let min_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::INFINITY, f64::min);
+    let max_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::INFINITY, f64::min);
+    let max_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
 
-    let min_val = v0.clone().into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
-    let max_val = v1.clone().into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
-    let range_val = max_val - min_val;
+    let min_val = min_val0.min(min_val1);
+    let max_val = max_val0.max(max_val1);
 
-    let sum0: f64 = v0.iter().sum();
-    let average0 = sum0 as f64 / v0.len() as f64;
-    let sum1: f64 = v1.iter().sum();
-    let average1 = sum1 as f64 / v1.len() as f64;
+    let mut normalized_arr: (Vec<f64>, Vec<f64>) = (
+        v0.iter().map(|&x| (x - min_val) / STDDEV).collect(),
+        v1.iter().map(|&x| (x - min_val) / STDDEV).collect(),
+    );
 
-    for num in v0.iter_mut() {
-        *num = (*num - average0) / STDDEV as f64;
-    }
-    for num in v1.iter_mut() {
-        // Subtract an extra 3 to seperate the channels for the RNN
-        *num = ((*num - average1) / STDDEV as f64) - 3.0;
-    }
+    let avg0: f64 = normalized_arr.0.iter().sum::<f64>() / normalized_arr.0.len() as f64;
+    let avg1: f64 = normalized_arr.1.iter().sum::<f64>() / normalized_arr.1.len() as f64;
 
-    (v0, v1)
+    normalized_arr.0.iter_mut().for_each(|x| *x -= avg0);
+    normalized_arr.1.iter_mut().for_each(|x| *x -= (avg1 + 3.0));
+    //debug!("{:?}", normalized_arr);
+
+    normalized_arr
 }
 
 fn main() {
@@ -83,17 +86,21 @@ fn main() {
         info!("Beginning logs in {}", fpath.to_str().expect("UNKNOWN"));
     }
 
+    let r_points: Mutex<Vec<[f64; 2]>> = Mutex::new(vec![[0.0; 2]; 4]);
+
     let writemode = false;
     let mut app = MonitorApp::new(10, 4);
     let native_options = eframe::NativeOptions::default();
     let monitor_ref = app.measurements.clone();
+    let vis_monitor = Arc::clone(&monitor_ref);
+    let box_monitor = Arc::clone(&monitor_ref);
 
-    let port = "COM4";
+    let port = "COM3";
     let baud_rate = 115200;
     let ports = serialport::available_ports().expect("No ports found!");
     println!("{:?}", ports);
 
-    let model = CModule::load("traced_model.pt");
+    let model = CModule::load("traced_model2.pt");
     let umodel: CModule;
     match model {
         Ok(m) => {info!("Loaded torch model successfully"); umodel = m},
@@ -102,7 +109,7 @@ fn main() {
 
     // Data read/write channel
     let (tx, rx) = mpsc::channel();
-    let active_thread = InputStreams::OrnsteinStream;
+    let active_thread = InputStreams::PhotometryStream;
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
@@ -113,35 +120,68 @@ fn main() {
                 .unwrap()
         );
 
+    // Custom VecDeque channels. Can be read from and written to without explicit locking
+    // Have size of 64. Designed so that when an element is added, another is popped. Pretty cool
     let (tx_deque0, rx_deque0) = deque_channel(64);
     let (tx_deque1, rx_deque1) = deque_channel(64);
+    let (tx_time, rx_time) = deque_channel(64);
 
     thread::spawn(move || {
+        let mut ix: usize = 0;
         loop {
             let v0: Vec<f64> = rx_deque0.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
             let v1: Vec<f64> = rx_deque1.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
+            let v2: Vec<f64> = rx_time.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
+
+            //debug!("{:?}", v0);
+
+            let min_val = v1.clone().into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+            let max_val = v1.clone().into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+
+            let min_time = v2.first();
+            let max_time = v2.last();
+            //println!("{:?}, {:?}", min_val, max_val);
+
+            match (min_time, max_time) {
+                (Some(min), Some(max)) => {
+                    box_monitor.lock().unwrap().update_rect(vec![
+                        [*max, max_val],
+                        [*max, min_val],
+                        [*min, min_val],
+                        [*min, max_val],
+                    ]);
+                },
+                _ => {
+                    continue;
+                }
+            }
+
             let (mut input_vec, nv1) = normalize_array(&v0, &v1);
             input_vec.extend(nv1);
             let input_data = Tensor::of_slice(&input_vec).unsqueeze(0).unsqueeze(2).to_kind(Kind::Float);
 
+            //debug!("{:?}", input_vec);
             match umodel.forward_ts(&[input_data]) {
                 Ok(output_data) => {
                     // The forward method was successful and returned a Tensor
-                    println!("Output data: ");
+                    //println!("Output data: ");
                     let tens1: Tensor = output_data.mean_dim(1, false, Kind::Float);
-                    let tens2 = Tensor::of_slice(&[0.22652599,  0.01613411,  0.19352987, -0.16627036,  0.45365506,
-                        0.11038084,  0.22680497,  0.03352911]);
+                    tens1.print();
+                    // PEAK DETECTION TENSOR
+                    let tens2 = Tensor::of_slice(&[-0.4445,  0.0094,  0.3916,  0.0283, -0.0047,  0.0379, -0.1839, -0.0370]);
 
-                    let distance = (&tens1 - &tens2).pow(&Tensor::of_slice(&[2])).sum(Kind::Float).sqrt();
-                    println!("Reward: {}", 1/distance);
-                    //output_data.print();
+                    let distance = tens1.dist(&tens2);
+                    let distance_scalar = distance.double_value(&[]);
+                    debug!("Distance: {}", 1.0/distance_scalar);
                 }
                 Err(e) => {
                     // The forward method failed and returned a TchError
-                    print!("Error: {}", e);
+                    error!("Error: {}", e);
                 }
             }
+            thread::sleep(Duration::from_millis(10));
         }
+        ix += 1;
     });
 
     match active_thread {
@@ -186,31 +226,34 @@ fn main() {
             let mut sec_start = Instant::now();
             let mut old_average = (0f64, 0f64);
             let mut old_std = (0f64, 0f64);
+            let y0: f64;
+            let y1: f64;
 
             thread::spawn(move || {
                 //let reader = std::io::BufReader::new(port);
                 let mut ix = 1i32;
                 loop {
-                    let y: f64 = process.step(dt) * 50.0;
+                    let y0: f64 = process.step(dt) * 50.0;
+                    let y1 = y0 - 10.0;
                     let elapsed: f64 = (start.elapsed().as_millis() as f64) / 1000.0;
                     let num = (
-                        (elapsed, y),
-                        (elapsed, y*y),
+                        (elapsed, y0),
+                        (elapsed, y1),
                         (elapsed - 1.0, old_average.0),
                         (elapsed -1.0, old_average.1)
                     );
-                    //println!("{:?}", num);
                     tx.send(num).unwrap();
-                    tx_deque0.send(y as f32);
-                    tx_deque1.send((y*y) as f32);
+                    tx_deque0.send(y0 as f32);
+                    tx_deque1.send(y1 as f32);
+                    tx_time.send(elapsed as f32);
 
                     let mut vec = vec_mutex.lock().unwrap();
-                    vec.push(vec![y, y*y]);
+                    vec.push(vec![y0, y1]);
                     if sec_start.elapsed() > Duration::from_secs(1) {
                         sec_start = Instant::now();
                         let v0 = vec.clone().into_iter().filter_map(|v| v.into_iter().nth(0)).collect::<Vec<_>>();
                         let v1 = vec.clone().into_iter().filter_map(|v| v.into_iter().nth(1)).collect::<Vec<_>>();
-                        let qft = qualifies_for_stimulation(&v0, &v1, old_average, old_std, 0.3);
+                        //let qft = qualifies_for_stimulation(&v0, &v1, old_average, old_std, 0.3);
 
                         old_average = average_vec(&vec);
                         old_std = std_dev(&v0,&v1);
@@ -228,8 +271,8 @@ fn main() {
                         .write_record(&[
                             elapsed.to_string(),
                             unix_timestamp_ms.to_string(),
-                            y.to_string(),
-                            (y * y).to_string(),
+                            y0.to_string(),
+                            y1.to_string(),
                         ]).expect("Could not write to CSV output");
 
                     thread::sleep(Duration::from_micros(1));
@@ -238,7 +281,8 @@ fn main() {
             });
         }
         InputStreams::PhotometryStream => {
-            let vec_mutex = Mutex::new(Vec::new());
+            let mut ix = 1i32;
+            let skip = 40;
 
             thread::spawn(move || {
                 let mut index = 1i32;
@@ -246,12 +290,15 @@ fn main() {
                     .timeout(Duration::from_millis(10))
                     .open()
                     .expect("Failed to open port");
-
+                /*
                 let mut writeport = serialport::new("COM5", baud_rate)
                     .timeout(Duration::from_millis(10))
                     .open()
                     .expect("Failed to open port");
 
+                 */
+
+                let vec_mutex = Mutex::new(Vec::new());
                 let reader = std::io::BufReader::new(readport);
                 let start = Instant::now();
                 let mut sec_start = Instant::now();
@@ -264,21 +311,32 @@ fn main() {
                     //println!("{:?}", line);
                     match line {
                         Ok(line) => {
+                            //println!("{}", &line);
                             // Here you can parse the line as per your serialization format.
                             // Assuming it's a string of integers separated by spaces:
                             let numbers: Vec<f64> = line
                                 .split_whitespace()
                                 .filter_map(|num| num.parse::<f64>().ok())
                                 .collect::<Vec<f64>>();
+
                             //println!("{:?}", numbers);
                             if numbers.len() >= 2 {
+                                let y0 = numbers[0];
+                                let y1 = numbers[1];
                                 let elapsed: f64 = (start.elapsed().as_millis() as f64) / 1000.0;
                                 let num = (
-                                    (elapsed, numbers[0] as f64),
-                                    (elapsed, numbers[1] as f64),
+                                    (elapsed, y0 as f64),
+                                    (elapsed, y1 as f64),
                                     (elapsed - 1.0, old_average.0),
                                     (elapsed - 1.0, old_average.1),
                                 );
+
+                                tx.send(num).unwrap();
+                                if ix % skip == 0 {
+                                    tx_deque0.send(y0 as f32);
+                                    tx_deque1.send(y1 as f32);
+                                    tx_time.send(elapsed as f32);
+                                }
 /*
                                 writer
                                     .expect("Writemode enabled, but no configured writer")
@@ -291,30 +349,28 @@ fn main() {
 
  */
 
-                                tx.send(num).unwrap();  // send processed value
                                 let mut vec = vec_mutex.lock().unwrap();
-                                vec.push(numbers);
+                                vec.push(vec![y0, y1]);
                                 if sec_start.elapsed() > Duration::from_secs(1) {
                                     sec_start = Instant::now();
                                     let v0 = vec.clone().into_iter().filter_map(|v| v.into_iter().nth(0)).collect::<Vec<_>>();
                                     let v1 = vec.clone().into_iter().filter_map(|v| v.into_iter().nth(1)).collect::<Vec<_>>();
                                     old_average = average_vec(&vec);
                                     old_std = std_dev(&v0,&v1);
-                                    let qft = qualifies_for_stimulation(&v0, &v1, old_average, old_std, 0.3);
-                                    println!("Qualifies for stimulation? {}", qft);
-
-                                    println!("STDDEV at time {}: {:?}", elapsed, old_std);
+                                    //let qft = qualifies_for_stimulation(&v0, &v1, old_average, old_std, 0.3);
+                                   /*
                                     if qft && zapper_timer.elapsed() > Duration::from_secs(16){
                                         zapper_timer = Instant::now();
                                         println!("Stimulation Threshold Reached")
                                         //writeport.write(&['s' as u8])
                                     }
                                     //println!("Stddev {:?}", old_std);
+
+                                    */
                                     vec.clear();
                                 }
                             }
-                            index += 1;
-                            //thread::sleep(Duration::from_millis(1));
+                            ix += 1;
                         }
                         Err(err) => {
                             eprintln!("Error: {}", err);
@@ -337,8 +393,8 @@ fn main() {
 
             if let Some(val) = last_received {
                 // Handle the received value
-                add_measurement!(monitor_ref, val.0, 0);
-                add_measurement!(monitor_ref, val.1, 1);
+                add_measurement!(*vis_monitor, val.0, 0);
+                add_measurement!(*vis_monitor, val.1, 1);
                 add_measurement!(monitor_ref, val.2, 2);
                 add_measurement!(monitor_ref, val.3, 3);
             }
