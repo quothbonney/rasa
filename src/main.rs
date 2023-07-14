@@ -8,7 +8,7 @@ mod threadedchannel;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs::{File, OpenOptions};
 use crate::monitor::MonitorApp;
 use crate::threadedchannel::{deque_channel};
@@ -39,7 +39,6 @@ macro_rules! add_measurement {
     };
 }
 
-const STDDEV: f64 = 1.0;
 
 enum InputStreams {
     TestStream,
@@ -47,60 +46,54 @@ enum InputStreams {
     OrnsteinStream
 }
 
-fn normalize_array(lower_: &Vec<f64>, high_: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
-    let mut v0 = lower_.clone();
-    let mut v1 = high_.clone();
-    let min_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::INFINITY, f64::min);
-    let max_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
-    let min_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::INFINITY, f64::min);
-    let max_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
-
-    let min_val = min_val0.min(min_val1);
-    let max_val = max_val0.max(max_val1);
-
-    let mut normalized_arr: (Vec<f64>, Vec<f64>) = (
-        v0.iter().map(|&x| (x - min_val) / STDDEV).collect(),
-        v1.iter().map(|&x| (x - min_val) / STDDEV).collect(),
-    );
-
-    let avg0: f64 = normalized_arr.0.iter().sum::<f64>() / normalized_arr.0.len() as f64;
-    let avg1: f64 = normalized_arr.1.iter().sum::<f64>() / normalized_arr.1.len() as f64;
-
-    normalized_arr.0.iter_mut().for_each(|x| *x -= avg0);
-    normalized_arr.1.iter_mut().for_each(|x| *x -= (avg1 + 3.0));
-    //debug!("{:?}", normalized_arr);
-
-    normalized_arr
-}
-
-fn main() {
+fn config_subscriber() {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
         .with_max_level(tracing::Level::TRACE)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+}
 
-    let fpath = Path::new("./sample.csv");
-    if fpath.exists() {
-        warn!("Logging location {} exists, persisting...", fpath.to_str().expect("UNKNOWN"));
-    } else {
-        info!("Beginning logs in {}", fpath.to_str().expect("UNKNOWN"));
+fn get_fpath() -> (String, String) {
+    let mut file_number = 0;
+    let mut file_path = format!("data/data{}.csv", file_number);
+    let mut reward_path = format!("data/reward{}.csv", file_number);
+
+    while Path::new(&file_path).exists() {
+        file_number += 1;
+        file_path = format!("data/data{}.csv", file_number);
+        reward_path = format!("data/reward{}.csv", file_number);
     }
 
-    let r_points: Mutex<Vec<[f64; 2]>> = Mutex::new(vec![[0.0; 2]; 4]);
+    (file_path, reward_path)
+}
 
-    let writemode = false;
-    let mut app = MonitorApp::new(10, 4);
-    let native_options = eframe::NativeOptions::default();
-    let monitor_ref = app.measurements.clone();
-    let vis_monitor = Arc::clone(&monitor_ref);
-    let box_monitor = Arc::clone(&monitor_ref);
+fn main() {
+    config_subscriber();
+
+    // Get next available filepath in pattern {data/data<num>.csv}
+    let (file_path , reward_path) = get_fpath();
 
     let port = "COM3";
     let baud_rate = 115200;
-    let ports = serialport::available_ports().expect("No ports found!");
-    println!("{:?}", ports);
 
-    let model = CModule::load("traced_model2.pt");
+    let mut vis_app = MonitorApp::new(10, 4);
+    let mut reward_app = MonitorApp::new(10, 1);
+    let native_options = eframe::NativeOptions::default();
+    let monitor_ref = vis_app.measurements.clone();
+    let reward_ref = reward_app.measurements.clone();
+
+    // Used in the analysis and the visualize threads. Rust is very particular about variable ownership, this seems
+    // To work as a solution
+    let vis_monitor = Arc::clone(&monitor_ref);
+    let ai_monitor = Arc::clone(&monitor_ref);
+
+    let reward_vis_monitor = Arc::clone(&reward_ref);
+    let reward_ai_monitor = Arc::clone(&reward_ref);
+
+    let ports = serialport::available_ports().expect("No ports found!");
+    info!("{:?}", ports);
+
+    let model = CModule::load("models/traced_model2.pt");
     let umodel: CModule;
     match model {
         Ok(m) => {info!("Loaded torch model successfully"); umodel = m},
@@ -109,16 +102,27 @@ fn main() {
 
     // Data read/write channel
     let (tx, rx) = mpsc::channel();
-    let active_thread = InputStreams::PhotometryStream;
+    let active_thread = InputStreams::OrnsteinStream;
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
                 .write(true)
                 .create(true)
                 .append(true)
-                .open(fpath)
+                .open(file_path)
                 .unwrap()
         );
+
+    info!("{:?}", reward_path);
+
+    let mut r_writer: Writer<File> = Writer::from_writer(
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(reward_path)
+            .unwrap()
+    );
 
     // Custom VecDeque channels. Can be read from and written to without explicit locking
     // Have size of 64. Designed so that when an element is added, another is popped. Pretty cool
@@ -128,51 +132,67 @@ fn main() {
 
     thread::spawn(move || {
         let mut ix: usize = 0;
+        let max_size = 256;
+        let mut vec_deque: VecDeque<f64> = VecDeque::with_capacity(max_size);
+        for i in 1..=300 {
+            vec_deque.push_back(i as f64);
+
+            if vec_deque.len() > max_size {
+                let popped_element = vec_deque.pop_front();
+            }
+        }
         loop {
             let v0: Vec<f64> = rx_deque0.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
             let v1: Vec<f64> = rx_deque1.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
             let v2: Vec<f64> = rx_time.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
-
-            //debug!("{:?}", v0);
 
             let min_val = v1.clone().into_iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
             let max_val = v1.clone().into_iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
 
             let min_time = v2.first();
             let max_time = v2.last();
-            //println!("{:?}, {:?}", min_val, max_val);
 
             match (min_time, max_time) {
                 (Some(min), Some(max)) => {
-                    box_monitor.lock().unwrap().update_rect(vec![
+                    ai_monitor.lock().unwrap().update_rect(vec![
                         [*max, max_val],
                         [*max, min_val],
                         [*min, min_val],
                         [*min, max_val],
                     ]);
+
                 },
                 _ => {
                     continue;
                 }
             }
 
+
             let (mut input_vec, nv1) = normalize_array(&v0, &v1);
             input_vec.extend(nv1);
             let input_data = Tensor::of_slice(&input_vec).unsqueeze(0).unsqueeze(2).to_kind(Kind::Float);
 
-            //debug!("{:?}", input_vec);
             match umodel.forward_ts(&[input_data]) {
                 Ok(output_data) => {
                     // The forward method was successful and returned a Tensor
                     //println!("Output data: ");
                     let tens1: Tensor = output_data.mean_dim(1, false, Kind::Float);
-                    tens1.print();
+                    //tens1.print();
                     // PEAK DETECTION TENSOR
                     let tens2 = Tensor::of_slice(&[-0.4445,  0.0094,  0.3916,  0.0283, -0.0047,  0.0379, -0.1839, -0.0370]);
 
                     let distance = tens1.dist(&tens2);
-                    let distance_scalar = distance.double_value(&[]);
-                    debug!("Distance: {}", 1.0/distance_scalar);
+                    let distance_scalar = 1.0/distance.double_value(&[]);
+                    vec_deque.push_back(distance_scalar);
+                    vec_deque.pop_front();
+                    //debug!("Distance: {}", distance_scalar);
+                    r_writer
+                        .write_record(&[
+                            min_time.unwrap_or(&0.0).to_string(),
+                            max_time.unwrap_or(&0.0).to_string(),
+                            distance_scalar.to_string()
+                        ]).expect("Could not write to CSV output");
+                    add_measurement!(*reward_vis_monitor, (min_time.unwrap(), distance_scalar), 0);
                 }
                 Err(e) => {
                     // The forward method failed and returned a TchError
@@ -203,13 +223,6 @@ fn main() {
                     );
                     //println!("{:?}", num);
                     tx.send(num).unwrap();
-                    if writemode {
-                        writer.write_record(&[
-                            elapsed.to_string(),
-                            y.to_string(),
-                            (y * y).to_string(),
-                        ]);
-                    }
 
                     thread::sleep(Duration::from_micros(10));
                     ix += 1;
@@ -290,13 +303,6 @@ fn main() {
                     .timeout(Duration::from_millis(10))
                     .open()
                     .expect("Failed to open port");
-                /*
-                let mut writeport = serialport::new("COM5", baud_rate)
-                    .timeout(Duration::from_millis(10))
-                    .open()
-                    .expect("Failed to open port");
-
-                 */
 
                 let vec_mutex = Mutex::new(Vec::new());
                 let reader = std::io::BufReader::new(readport);
@@ -323,6 +329,11 @@ fn main() {
                             if numbers.len() >= 2 {
                                 let y0 = numbers[0];
                                 let y1 = numbers[1];
+                                let y2 = if let Some(value) = numbers.get(2) {
+                                    *value
+                                } else {
+                                    0.0
+                                };
                                 let elapsed: f64 = (start.elapsed().as_millis() as f64) / 1000.0;
                                 let num = (
                                     (elapsed, y0 as f64),
@@ -337,17 +348,21 @@ fn main() {
                                     tx_deque1.send(y1 as f32);
                                     tx_time.send(elapsed as f32);
                                 }
-/*
-                                writer
-                                    .expect("Writemode enabled, but no configured writer")
-                                    .write_record(&[
-                                    elapsed.to_string(),
-                                    numbers[0].to_string(),
-                                    numbers[1].to_string(),
-                                    //numbers[2].to_string(),
-                                ]).unwrap();
 
- */
+                                let current_time = SystemTime::now();
+                                let unix_timestamp_ms = current_time.duration_since(UNIX_EPOCH)
+                                    .expect("Time went backwards")
+                                    .as_millis();
+
+                                writer
+                                    .write_record(&[
+                                        elapsed.to_string(),
+                                        unix_timestamp_ms.to_string(),
+                                        y0.to_string(),
+                                        y1.to_string(),
+                                        y2.to_string()
+                                    ]).expect("Could not write to CSV output");
+
 
                                 let mut vec = vec_mutex.lock().unwrap();
                                 vec.push(vec![y0, y1]);
@@ -401,6 +416,9 @@ fn main() {
         }
     });
 
+    let copied_options = native_options.clone();
     info!("Main thread started");
-    eframe::run_native("Monitor app", native_options, Box::new(|_| Box::new(app)));
+    eframe::run_native("Photometry App", native_options.clone(), Box::new(|_| Box::new(vis_app)));
+
+    //eframe::run_native("Reward app", copied_options.clone(), Box::new(|_| Box::new(reward_app)));
 }

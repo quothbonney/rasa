@@ -1,3 +1,5 @@
+const STDDEV: f64 = 0.5;
+
 
 pub fn average_vec(vec: &Vec<Vec<f64>>) -> (f64, f64) {
     let (sum0, count0) = vec.iter()
@@ -12,6 +14,35 @@ pub fn average_vec(vec: &Vec<Vec<f64>>) -> (f64, f64) {
     av
 }
 
+
+pub fn normalize_array(lower_: &Vec<f64>, high_: &Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+    let mut v0 = lower_.clone();
+    let mut v1 = high_.clone();
+
+    // Get each min and max value from the arrays in order to normalize them
+    // There has got to be an easier way to do this, but this is the best that I can find
+    // Honestly Rust is a great language but the builder pattern is not the move...
+    let min_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::INFINITY, f64::min);
+    let max_val0 = v0.iter().chain(v0.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::INFINITY, f64::min);
+    let max_val1 = v1.iter().chain(v1.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
+    let min_val = min_val0.min(min_val1);
+
+    // Actually a mistake, but I generated the model by subtracting the min, so obviously I have to do the same thing
+    let mut normalized_arr: (Vec<f64>, Vec<f64>) = (
+        v0.iter().map(|&x| (x - min_val) / STDDEV).collect(),
+        v1.iter().map(|&x| (x - min_val) / STDDEV).collect(),
+    );
+
+    let avg0: f64 = normalized_arr.0.iter().sum::<f64>() / normalized_arr.0.len() as f64;
+    let avg1: f64 = normalized_arr.1.iter().sum::<f64>() / normalized_arr.1.len() as f64;
+
+    normalized_arr.0.iter_mut().for_each(|x| *x -= avg0);
+    // Offset by 3 for the RNN to distinguish the channels. Could have passed channels 2 at a time. Didn't.
+    normalized_arr.1.iter_mut().for_each(|x| *x -= (avg1 + 3.0));
+
+    normalized_arr
+}
 
 pub fn std_dev(data1: &[f64], data2: &[f64]) -> (f64, f64) {
     let n1 = data1.len() as f64;
