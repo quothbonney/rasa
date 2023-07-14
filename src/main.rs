@@ -26,6 +26,7 @@ use std::thread;
 use tracing::{error, info, debug, warn};
 use clap::{arg, Parser};
 use tch::{IndexOp, CModule, Tensor, Kind};
+use tracing::field::debug;
 
 macro_rules! add_measurement {
     ($monitor_ref:expr, $value:expr, $channel:expr) => {
@@ -80,15 +81,17 @@ fn main() {
     let mut reward_app = MonitorApp::new(10, 1);
     let native_options = eframe::NativeOptions::default();
     let monitor_ref = vis_app.measurements.clone();
-    let reward_ref = reward_app.measurements.clone();
 
     // Used in the analysis and the visualize threads. Rust is very particular about variable ownership, this seems
     // To work as a solution
     let vis_monitor = Arc::clone(&monitor_ref);
     let ai_monitor = Arc::clone(&monitor_ref);
 
+    /*
+    let reward_ref = reward_app.measurements.clone();
     let reward_vis_monitor = Arc::clone(&reward_ref);
     let reward_ai_monitor = Arc::clone(&reward_ref);
+     */
 
     let ports = serialport::available_ports().expect("No ports found!");
     info!("{:?}", ports);
@@ -102,7 +105,7 @@ fn main() {
 
     // Data read/write channel
     let (tx, rx) = mpsc::channel();
-    let active_thread = InputStreams::OrnsteinStream;
+    let active_thread = InputStreams::PhotometryStream;
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
@@ -131,10 +134,15 @@ fn main() {
     let (tx_time, rx_time) = deque_channel(64);
 
     thread::spawn(move || {
+        let mut zapper_timer = Instant::now();
         let mut ix: usize = 0;
-        let max_size = 256;
+        let mut sigma = 3.7;
+        let max_sigma = 4.5;
+        let sigma_inc = 0.05;
+
+        let max_size = 1024;
         let mut vec_deque: VecDeque<f64> = VecDeque::with_capacity(max_size);
-        for i in 1..=300 {
+        for i in 1..=max_size+5{
             vec_deque.push_back(i as f64);
 
             if vec_deque.len() > max_size {
@@ -192,7 +200,22 @@ fn main() {
                             max_time.unwrap_or(&0.0).to_string(),
                             distance_scalar.to_string()
                         ]).expect("Could not write to CSV output");
-                    add_measurement!(*reward_vis_monitor, (min_time.unwrap(), distance_scalar), 0);
+
+                    let stddev = std_dev_vec_deque(&vec_deque).unwrap();
+                    let average = average_vec_deque(&vec_deque).unwrap();
+                    let zscore = (distance_scalar - average) / stddev;
+                    if zscore > sigma {
+                        if zapper_timer.elapsed() > Duration::from_secs(16) {
+                            zapper_timer = Instant::now();
+                            if sigma < max_sigma {
+                                sigma += sigma_inc;
+                            }
+                            info!("Stimulation received after peak with reward {} and z-score {}", distance_scalar, zscore);
+                        }
+                        else {
+                            info!("Cooldown - received reward {} and z-score {}", distance_scalar, zscore);
+                        }
+                    }
                 }
                 Err(e) => {
                     // The forward method failed and returned a TchError
@@ -243,6 +266,7 @@ fn main() {
             let y1: f64;
 
             thread::spawn(move || {
+
                 //let reader = std::io::BufReader::new(port);
                 let mut ix = 1i32;
                 loop {
@@ -294,8 +318,10 @@ fn main() {
             });
         }
         InputStreams::PhotometryStream => {
+
             let mut ix = 1i32;
             let skip = 40;
+            let mut process = OrnsteinUhlenbeck::new(0.5, 0.5, 0.1, 0.0);
 
             thread::spawn(move || {
                 let mut index = 1i32;
@@ -327,8 +353,9 @@ fn main() {
 
                             //println!("{:?}", numbers);
                             if numbers.len() >= 2 {
-                                let y0 = numbers[0];
-                                let y1 = numbers[1];
+                                let smudge_coefficient: f64 = process.step(0.01) * 50.0;
+                                let y0 = numbers[0] + smudge_coefficient;
+                                let y1 = numbers[1] + smudge_coefficient;
                                 let y2 = if let Some(value) = numbers.get(2) {
                                     *value
                                 } else {

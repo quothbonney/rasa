@@ -1,5 +1,6 @@
 const STDDEV: f64 = 0.5;
 
+use std::collections::VecDeque;
 
 pub fn average_vec(vec: &Vec<Vec<f64>>) -> (f64, f64) {
     let (sum0, count0) = vec.iter()
@@ -64,4 +65,48 @@ pub fn std_dev(data1: &[f64], data2: &[f64]) -> (f64, f64) {
     let std_dev2 = variance2.sqrt();
 
     (std_dev1, std_dev2)
+}
+
+pub fn std_dev_vec_deque(data: &VecDeque<f64>) -> Option<f64> {
+    let n = data.len() as f64;
+
+    // Calculate the mean
+    let sum: f64 = data.iter().sum();
+    let mean = sum / n;
+
+    // Calculate the sum of squares of differences
+    let sum_of_squares: f64 = data
+        .iter()
+        .map(|&x| (x - mean).powi(2))
+        .sum();
+
+    // Calculate the variance
+    let variance = sum_of_squares / n;
+
+    // Calculate the standard deviation
+    let standard_deviation = variance.sqrt();
+
+    // Return the result
+    if n > 1.0 {
+        Some(standard_deviation)
+    } else {
+        None
+    }
+}
+
+pub fn average_vec_deque(data: &VecDeque<f64>) -> Option<f64> {
+    let n = data.len() as f64;
+
+    // Calculate the sum of all elements
+    let sum: f64 = data.iter().sum();
+
+    // Calculate the average (mean)
+    let average = sum / n;
+
+    // Return the result
+    if n > 0.0 {
+        Some(average)
+    } else {
+        None
+    }
 }
