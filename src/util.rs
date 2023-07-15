@@ -1,4 +1,4 @@
-const STDDEV: f64 = 0.5;
+const STDDEV: f64 = 50.0;
 
 use std::collections::VecDeque;
 

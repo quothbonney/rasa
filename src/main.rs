@@ -73,8 +73,10 @@ fn main() {
 
     // Get next available filepath in pattern {data/data<num>.csv}
     let (file_path , reward_path) = get_fpath();
+    let is_ttl = Arc::new(Mutex::new(false));
+    let ttl_clone = is_ttl.clone();
 
-    let port = "COM3";
+    let port = "COM4";
     let baud_rate = 115200;
 
     let mut vis_app = MonitorApp::new(10, 4);
@@ -134,10 +136,15 @@ fn main() {
     let (tx_time, rx_time) = deque_channel(64);
 
     thread::spawn(move || {
+
+        let mut writeport = serialport::new("COM5", baud_rate)
+            .timeout(Duration::from_millis(10))
+            .open()
+            .expect("Failed to open port");
         let mut zapper_timer = Instant::now();
         let mut ix: usize = 0;
         let mut sigma = 3.7;
-        let max_sigma = 4.5;
+        let max_sigma = 5.5;
         let sigma_inc = 0.05;
 
         let max_size = 1024;
@@ -179,6 +186,7 @@ fn main() {
             let (mut input_vec, nv1) = normalize_array(&v0, &v1);
             input_vec.extend(nv1);
             let input_data = Tensor::of_slice(&input_vec).unsqueeze(0).unsqueeze(2).to_kind(Kind::Float);
+            //println!("{:?}", input_vec);
 
             match umodel.forward_ts(&[input_data]) {
                 Ok(output_data) => {
@@ -187,12 +195,14 @@ fn main() {
                     let tens1: Tensor = output_data.mean_dim(1, false, Kind::Float);
                     //tens1.print();
                     // PEAK DETECTION TENSOR
-                    let tens2 = Tensor::of_slice(&[-0.4445,  0.0094,  0.3916,  0.0283, -0.0047,  0.0379, -0.1839, -0.0370]);
+                    let tens2 = Tensor::of_slice(&[-0.1309, -0.0426, -0.0295,  0.1515,  0.1200, -0.3180,  0.1198,  0.0594]);
 
                     let distance = tens1.dist(&tens2);
+                    //tens1.print();
                     let distance_scalar = 1.0/distance.double_value(&[]);
                     vec_deque.push_back(distance_scalar);
                     vec_deque.pop_front();
+                    //tens1.print();
                     //debug!("Distance: {}", distance_scalar);
                     r_writer
                         .write_record(&[
@@ -204,13 +214,20 @@ fn main() {
                     let stddev = std_dev_vec_deque(&vec_deque).unwrap();
                     let average = average_vec_deque(&vec_deque).unwrap();
                     let zscore = (distance_scalar - average) / stddev;
-                    if zscore > sigma {
+
+                    if distance_scalar > 300.0 {
                         if zapper_timer.elapsed() > Duration::from_secs(16) {
                             zapper_timer = Instant::now();
                             if sigma < max_sigma {
                                 sigma += sigma_inc;
                             }
-                            info!("Stimulation received after peak with reward {} and z-score {}", distance_scalar, zscore);
+                            if *ttl_clone.lock().unwrap() {
+                                info!("Stimulation received after peak with reward {} and z-score {}", distance_scalar, zscore);
+                                writeport.write(&['s' as u8]);
+                            }
+                            else {
+                                warn!("Stimulation cannot be administered. TTL bit not received.")
+                            }
                         }
                         else {
                             info!("Cooldown - received reward {} and z-score {}", distance_scalar, zscore);
@@ -253,6 +270,9 @@ fn main() {
             });
         }
         InputStreams::OrnsteinStream => {
+            let mut ttl_guard = is_ttl.lock().unwrap();
+            *ttl_guard = true;
+
             info!("Beginning Ornstein stream on active thread");
             let mut zapper_timer = Instant::now();
             let vec_mutex = Mutex::new(Vec::new());
@@ -318,6 +338,7 @@ fn main() {
             });
         }
         InputStreams::PhotometryStream => {
+            info!("Beginning Photometry stream on active thread");
 
             let mut ix = 1i32;
             let skip = 40;
@@ -337,6 +358,7 @@ fn main() {
                 let mut zapper_timer = Instant::now();
                 let mut old_average = (0f64, 0f64);
                 let mut old_std = (0f64, 0f64);
+                let mut last_ttl = 1;
 
                 for line in reader.lines() {
                     //println!("Size of reader: {:?}", &reader.().lines().size_hint());
@@ -353,14 +375,22 @@ fn main() {
 
                             //println!("{:?}", numbers);
                             if numbers.len() >= 2 {
-                                let smudge_coefficient: f64 = process.step(0.01) * 50.0;
-                                let y0 = numbers[0] + smudge_coefficient;
-                                let y1 = numbers[1] + smudge_coefficient;
+                                //let smudge_coefficient: f64 = process.step(0.01) * 300.0;
+                                let y0 = numbers[0];// + smudge_coefficient;
+                                let y1 = numbers[1];// + smudge_coefficient;
                                 let y2 = if let Some(value) = numbers.get(2) {
                                     *value
                                 } else {
                                     0.0
                                 };
+                                if y2 as i32 == 0 && last_ttl == 0 && *is_ttl.lock().unwrap() == false {
+                                    let mut ttl_guard = is_ttl.lock().unwrap();
+                                    *ttl_guard = true;
+                                    info!("Received TTL Signal.");
+                                } else {
+                                    last_ttl = y2 as i32;
+                                }
+
                                 let elapsed: f64 = (start.elapsed().as_millis() as f64) / 1000.0;
                                 let num = (
                                     (elapsed, y0 as f64),
@@ -404,7 +434,6 @@ fn main() {
                                     if qft && zapper_timer.elapsed() > Duration::from_secs(16){
                                         zapper_timer = Instant::now();
                                         println!("Stimulation Threshold Reached")
-                                        //writeport.write(&['s' as u8])
                                     }
                                     //println!("Stddev {:?}", old_std);
 
