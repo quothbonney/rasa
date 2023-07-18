@@ -1,4 +1,4 @@
-use std::sync::{Mutex, Arc};
+use std::sync::{Mutex, Arc, RwLock};
 use std::sync::mpsc::Sender;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -8,6 +8,7 @@ use csv::Writer;
 use std::thread;
 use std::time::{Instant, Duration};
 use serde::Deserialize;
+use crate::structs::RasaVariables;
 
 use crate::threadedchannel::{BoundedSender, deque_channel};
 use crate::util::*;
@@ -16,9 +17,9 @@ use std::error::Error;
 use std::io::Read;
 use std::path::Path;
 
-pub fn start_instant_replay(file: String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
+pub fn start_instant_replay(file: String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>, vars: &Arc<RwLock<RasaVariables>>) {
     let vec_mutex = Mutex::new(Vec::new());
-    let path = Path::new(file);
+    let path = Path::new(&file);
     let file = File::open(&path);
     let mut sec_start = Instant::now();
     let start = Instant::now();
@@ -30,6 +31,7 @@ pub fn start_instant_replay(file: String, tx: Sender<[(f64, f64); 4]>, tx_deque0
     let mut reader = csv::Reader::from_reader(file.unwrap());
 
     for result in reader.records() {
+        let skip = vars.read().unwrap().skip;
         // The iterator yields Result<StringRecord, Error>, so we check the error here.
         let record = result.unwrap();
 
@@ -57,7 +59,6 @@ pub fn start_instant_replay(file: String, tx: Sender<[(f64, f64); 4]>, tx_deque0
             (elapsed, 0.0),
             (elapsed, 0.0),
         ];
-        let skip = 40;
         tx.send(num).unwrap();
         if ix % skip == 0 {
             tx_deque0.send(y0 as f32);

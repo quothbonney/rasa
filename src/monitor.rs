@@ -12,6 +12,8 @@ use clap::{arg, Parser};
 use egui::plot::*;
 use egui::{Label, Button, Vec2};
 
+use crate::structs::RasaVariables;
+
 macro_rules! add_plot_line {
     ($plot_ui:expr, $color:expr, $data:expr, $channel:expr) => {
         {
@@ -22,30 +24,97 @@ macro_rules! add_plot_line {
     };
 }
 
+pub struct RightSidebar {
+    vars: Arc<RwLock<RasaVariables>>,
+}
+
+impl RightSidebar {
+    pub fn new(program_vars: Arc<RwLock<RasaVariables>>) -> Self {
+        Self {
+            vars: program_vars,
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        let mut sidebar_text = String::new();
+        ui.vertical(|ui| {
+            ui.label("Sidebar");
+            ui.separator();
+
+            ui.checkbox(&mut self.vars.write().unwrap().show_box, "Show Box");
+
+            ui.add(egui::Slider::new(&mut self.vars.write().unwrap().look_behind, 0..=25).text("X-Range").integer());
+            ui.add(egui::Slider::new(&mut self.vars.write().unwrap().skip, 1..=60).text("Skip").integer());
+        });
+    }
+}
+
+
+pub struct Plots {
+    vars: Arc<RwLock<RasaVariables>>,
+}
+
+impl Plots {
+    pub fn new(program_vars: Arc<RwLock<RasaVariables>>) -> Self {
+        Self {
+            vars: program_vars,
+        }
+    }
+
+    pub fn show_measurements(&self, ui: &mut egui::Ui, measurements: &Arc<Mutex<MeasurementWindow>>) {
+        let measurement_plot = Plot::new("measurements").allow_drag(false);
+        measurement_plot.show(ui, |plot_ui| {
+            add_plot_line!(plot_ui, egui::Color32::LIGHT_GREEN, measurements, 0);
+            add_plot_line!(plot_ui, egui::Color32::LIGHT_RED, measurements, 1);
+
+            let series: PlotPoints = PlotPoints::new(measurements.lock().unwrap().rectpoints.clone());
+            if self.vars.read().unwrap().show_box {
+                let poly = Polygon::new(series);
+                plot_ui.polygon(poly);
+            }
+        });
+    }
+
+    pub fn show_rewards(&self, ui: &mut egui::Ui, measurements: &Arc<Mutex<MeasurementWindow>>) {
+        let mut reward_plot = egui::plot::Plot::new("rewards").allow_drag(false);
+        reward_plot = reward_plot.include_y(300.0);
+        reward_plot = reward_plot.include_y(200.0);
+
+        reward_plot.show(ui, |plot_ui| {
+            add_plot_line!(plot_ui, egui::Color32::GOLD, measurements, 4);
+        });
+    }
+}
+
 
 pub struct MonitorApp {
-    pub include_y: Vec<f64>,
+    pub rasa: Arc<RwLock<RasaVariables>>,
     pub  measurements: Arc<Mutex<MeasurementWindow>>,
     pub  reward: Arc<Mutex<MeasurementWindow>>,
     pub  feedback: Vec<f64>,
 
+    sidebar: RightSidebar,
+    plots: Plots,
     show_box: bool,
 }
 
 impl MonitorApp {
-    pub fn new(look_behind: usize, channels: usize) -> Self {
+    pub fn new(vars: &Arc<RwLock<RasaVariables>>) -> Self {
+        let var_l = vars.read().unwrap();
         Self {
-            measurements: Arc::new(Mutex::new(MeasurementWindow::new_with_look_behind(
-                look_behind,
-                channels
+            rasa: Arc::clone(&vars),
+            measurements: Arc::new(Mutex::new(MeasurementWindow::new(
+                Arc::clone(&vars)
             ))),
-            reward: Arc::new(Mutex::new(MeasurementWindow::new_with_look_behind(
-                look_behind,
-                channels
+            reward: Arc::new(Mutex::new(MeasurementWindow::new(
+                Arc::clone(&vars)
             ))),
-            include_y: Vec::new(),
             feedback: Vec::new(),
-            show_box: true,
+
+            sidebar: RightSidebar::new(Arc::clone(&vars)),
+            plots: Plots::new(Arc::clone(&vars)),
+
+            show_box: var_l.show_box
         }
     }
 
@@ -53,6 +122,7 @@ impl MonitorApp {
         //self.measurements.lock().unwrap().values
     }
 }
+
 
 impl eframe::App for MonitorApp {
     /// Called by the frame work to save state before shutdown.
@@ -65,8 +135,6 @@ impl eframe::App for MonitorApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut sidebar_text = String::new();
-
         let side_panel_width = 200.0;
         egui::CentralPanel::default().show(ctx, |ui| {
             let total_height = ui.available_size().y;
@@ -76,55 +144,20 @@ impl eframe::App for MonitorApp {
             let button_height = total_height * button_ratio;
             let label_height = total_height * label_ratio;
 
-                ui.allocate_ui(Vec2::new(ui.available_size().x - side_panel_width, button_height), |ui| {
-                    let mut plot = egui::plot::Plot::new("measurements").allow_drag(false);
-                    for y in self.include_y.iter() {
-                        plot = plot.include_y(*y);
-                    }
-
-                    plot.show(ui, |plot_ui| {
-                        add_plot_line!(plot_ui, egui::Color32::LIGHT_GREEN, self.measurements, 0);
-                        add_plot_line!(plot_ui, egui::Color32::LIGHT_RED, self.measurements, 1);
-                        //add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 2);
-                        //add_plot_line!(plot_ui, egui::Color32::LIGHT_BLUE, self.measurements, 3);
-
-                        let series: PlotPoints = PlotPoints::new(self.measurements.lock().unwrap().rectpoints.clone());
-                        if self.show_box {
-                            let poly = Polygon::new(series);
-                            plot_ui.polygon(poly);
-                        }
-                    });
-                });
+            ui.allocate_ui(Vec2::new(ui.available_size().x - side_panel_width, button_height), |ui| {
+                self.plots.show_measurements(ui, &self.measurements);
+            });
 
             ui.allocate_ui(Vec2::new(ui.available_size().x - side_panel_width, label_height), |ui| {
-                let mut reward_plot = egui::plot::Plot::new("rewards").allow_drag(false);
-                reward_plot = reward_plot.include_y(300.0);
-                reward_plot = reward_plot.include_y(200.0);
-
-                reward_plot.show(ui, |plot_ui| {
-                    add_plot_line!(plot_ui, egui::Color32::GOLD, self.measurements, 4);
-                });
+                self.plots.show_rewards(ui, &self.measurements);
             });
         });
 
-        // Create a side panel.
-        egui::SidePanel::right("Sidebar").show(ctx, |ui| {
-            ui.vertical(|ui| {
-                ui.label("Sidebar");
-                ui.separator();
-
-                if ui.button("Show Box").clicked() {
-                    self.show_box = !self.show_box;
-                }
-                if ui.button("Button 2").clicked() {
-                    sidebar_text = "Button 2 clicked".to_string();
-                }
-                if ui.button("Button 3").clicked() {
-                    sidebar_text = "Button 3 clicked".to_string();
-                }
-            });
+        egui::SidePanel::right("Sidebar").show(ctx, |mut ui| {
+            self.sidebar.show(&mut ui)
         });
-        // make it always repaint. TODO: can we slow down here?
+
+        // make it always repaint
         ctx.request_repaint();
     }
 }

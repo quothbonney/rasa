@@ -3,11 +3,13 @@ mod monitor;
 mod stim;
 mod util;
 mod threadedchannel;
+mod structs;
 
 
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::{Path, PathBuf};
 use std::fs::{File, OpenOptions};
@@ -23,7 +25,7 @@ use std::time::{Duration, Instant};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::*;
 use serialport::*;
-use std::thread;
+use std::{sync, thread};
 use tracing::{debug, error, info, warn};
 use clap::{arg, Parser};
 use tch::{CModule, IndexOp, Kind, Tensor};
@@ -86,7 +88,17 @@ fn main() {
     let is_ttl = Arc::new(Mutex::new(false));
     let ttl_clone = is_ttl.clone();
 
-    let mut vis_app = MonitorApp::new(20, 5);
+    let program_vars = Arc::new(RwLock::new(structs::RasaVariables {
+        show_box: true,
+
+        look_behind: 4,
+        skip: 4,
+        channels:5,
+    }));
+
+    println!("Got here");
+    let mut vis_app = monitor::MonitorApp::new(&program_vars);
+    println!("Got here");
     //let mut reward_app = MonitorApp::new(10, 1);
     let native_options = eframe::NativeOptions::default();
     let monitor_ref = vis_app.measurements.clone();
@@ -102,11 +114,11 @@ fn main() {
     let umodel : CModule;
     match CModule::load("models/traced_model2.pt") {
         Ok(m) => {info!("Loaded torch model successfully"); umodel = m},
-        Err => {error!("Unable to load torch model. Aborting..."); panic!() }
+        Err(m) => {error!("Unable to load torch model. Aborting..."); panic!() }
     }
 
     // Data read/write channel
-    let active_thread = InputStreams::TestStream;
+    let active_thread = InputStreams::InstantReplayStream(String::from("data/data85.csv"));
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
@@ -247,7 +259,7 @@ fn main() {
     match active_thread {
         InputStreams::InstantReplayStream(file) => {
             thread::spawn(move || {
-                streams::instantreplay::start_instant_replay(file, tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
+                streams::instantreplay::start_instant_replay(file, tx, &tx_deque0, &tx_deque1, &tx_time, writer, &program_vars);
             });
         }
         InputStreams::TestStream => { // Stream for Sin + spike data

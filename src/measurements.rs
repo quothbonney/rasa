@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 use tracing::warn;
+use std::sync::*;
+use crate::structs::RasaVariables;
 
 pub type Measurement = egui::plot::PlotPoint;
 
@@ -8,17 +10,27 @@ pub struct MeasurementWindow {
     // Values is a vector of vecdeques. The first dimension (non-deque) corresponds to each DataInputStream class
     // The second data from the deque corresponds to the plottable data
     pub values: Vec<VecDeque<Measurement>>,
-    pub look_behind: usize,
-    pub channels: usize,
+    vars: Arc<RwLock<RasaVariables>>,
     pub  rectpoints: Vec<[f64; 2]>,
 }
 
 impl MeasurementWindow {
+    /*
     pub fn new_with_look_behind(look_behind: usize, channels: usize) -> Self {
         Self {
             values: vec![VecDeque::new(); channels],
             look_behind,
             channels,
+            rectpoints: vec![[0.0; 2]; 4],
+        }
+    }
+     */
+
+    pub fn new(program_vars: Arc<RwLock<RasaVariables>>) -> Self {
+        let var_l = program_vars.read().unwrap();
+        Self {
+            values: vec![VecDeque::new(); var_l.channels],
+            vars: Arc::clone(&program_vars),
             rectpoints: vec![[0.0; 2]; 4],
         }
     }
@@ -38,7 +50,7 @@ impl MeasurementWindow {
                 }
                 ch.push_back(measurement);
 
-                let limit = measurement.x - (self.look_behind as f64);
+                let limit = measurement.x - (self.vars.read().unwrap().look_behind as f64);
                 while let Some(front) = ch.front() {
                     if front.x >= limit {
                         break;
