@@ -28,9 +28,12 @@ use std::sync::*;
 use serialport::*;
 use std::{sync, thread};
 use tracing::{debug, error, info, warn};
-use clap::{arg, Parser};
 use tch::{CModule, IndexOp, Kind, Tensor};
 use tracing::field::debug;
+//use clap::{Arg, App, SubCommand};
+use std::str::FromStr;
+
+
 mod streams {
     pub mod teststream;
     pub mod ornstein;
@@ -55,10 +58,13 @@ macro_rules! add_measurement {
 
 enum InputStreams {
     TestStream,
-    PhotometryStream,
+    PhotometryStream,//(String, String),
     OrnsteinStream,
     InstantReplayStream(String)
 }
+
+
+
 
 fn config_subscriber() {
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
@@ -98,9 +104,9 @@ fn main() {
         channels:5,
     }));
 
-    println!("Got here");
+    //println!("Got here");
     let mut vis_app = monitor::MonitorApp::new(&program_vars);
-    println!("Got here");
+    //println!("Got here");
     //let mut reward_app = MonitorApp::new(10, 1);
     let native_options = eframe::NativeOptions::default();
     let monitor_ref = vis_app.measurements.clone();
@@ -120,7 +126,7 @@ fn main() {
     }
 
     // Data read/write channel
-    let active_thread = InputStreams::InstantReplayStream(String::from("data/data85.csv"));
+    let active_thread = InputStreams::PhotometryStream;//InstantReplayStream(String::from("data/data85.csv"));
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
@@ -277,7 +283,7 @@ fn main() {
         InputStreams::PhotometryStream => {
             thread::spawn(move || {
                 // TODO: Make sure is_ttl is working
-                streams::photometry::start_photometry_stream(tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
+                streams::photometry::start_photometry_stream(&String::from("COM4"), &String::from("COM5"), tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
             });
         }
     }

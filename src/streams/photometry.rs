@@ -15,15 +15,15 @@ use std::io::BufRead;
 use crate::threadedchannel::{BoundedSender, deque_channel};
 use crate::util::*;
 
-pub fn start_photometry_stream(tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
+pub fn start_photometry_stream(inport: &String, output: &String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
     info!("Beginning Photometry stream on active thread");
-    let port = "COM3";
+    //let port = "COM3";
     let baud_rate = 115200;
 
     let mut ix = 1i32;
     let skip = 40;
     let mut index = 1i32;
-    let readport = serialport::new(port, baud_rate)
+    let readport = serialport::new(inport, baud_rate)
         .timeout(Duration::from_millis(10))
         .open()
         .expect("Failed to open port");
