@@ -24,6 +24,7 @@ macro_rules! add_plot_line {
     };
 }
 
+
 pub struct RightSidebar {
     vars: Arc<RwLock<RasaVariables>>,
 }
@@ -134,6 +135,7 @@ impl eframe::App for MonitorApp {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let side_panel_width = 200.0;
         egui::CentralPanel::default().show(ctx, |ui| {

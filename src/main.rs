@@ -5,7 +5,8 @@ mod util;
 mod threadedchannel;
 mod structs;
 
-
+use winit::window::Icon;
+use winit::window::WindowBuilder;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -80,6 +81,7 @@ fn get_fpath() -> (String, String) {
     (file_path, reward_path)
 }
 
+
 fn main() {
     config_subscriber();
 
@@ -92,7 +94,7 @@ fn main() {
         show_box: true,
 
         look_behind: 4,
-        skip: 4,
+        skip: 30,
         channels:5,
     }));
 
@@ -223,7 +225,7 @@ fn main() {
                     let stddev = std_dev_vec_deque(&vec_deque).unwrap();
                     let average = average_vec_deque(&vec_deque).unwrap();
                     let zscore = (distance_scalar - average) / stddev;
-                    let avg_time = (min_time.unwrap_or(&0.0) + max_time.unwrap_or(&0.0)) / 2.0;
+                    let avg_time = max_time.unwrap_or(&0.0) / 1.0;
                     tx_reward.send((avg_time, distance_scalar));
 
                     if distance_scalar > 300.0 {
