@@ -15,7 +15,7 @@ use std::io::BufRead;
 use crate::threadedchannel::{BoundedSender, deque_channel};
 use crate::util::*;
 
-pub fn start_photometry_stream(inport: &String, output: &String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
+pub fn start_photometry_stream(inport: &String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
     info!("Beginning Photometry stream on active thread");
     //let port = "COM3";
     let baud_rate = 115200;
@@ -106,15 +106,7 @@ pub fn start_photometry_stream(inport: &String, output: &String, tx: Sender<[(f6
                         let v1 = vec.clone().into_iter().filter_map(|v| v.into_iter().nth(1)).collect::<Vec<_>>();
                         old_average = average_vec(&vec);
                         old_std = std_dev(&v0,&v1);
-                        //let qft = qualifies_for_stimulation(&v0, &v1, old_average, old_std, 0.3);
-                        /*
-                         if qft && zapper_timer.elapsed() > Duration::from_secs(16){
-                             zapper_timer = Instant::now();
-                             println!("Stimulation Threshold Reached")
-                         }
-                         //println!("Stddev {:?}", old_std);
 
-                         */
                         vec.clear();
                     }
                 }

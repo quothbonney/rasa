@@ -55,15 +55,13 @@ macro_rules! add_measurement {
     };
 }
 
-
+#[derive(Clone)]
 enum InputStreams {
     TestStream,
-    PhotometryStream,//(String, String),
+    PhotometryStream(String, String, bool),
     OrnsteinStream,
     InstantReplayStream(String)
 }
-
-
 
 
 fn config_subscriber() {
@@ -126,7 +124,8 @@ fn main() {
     }
 
     // Data read/write channel
-    let active_thread = InputStreams::PhotometryStream;//InstantReplayStream(String::from("data/data85.csv"));
+    let active_thread = InputStreams::PhotometryStream(String::from("COM3"), String::from("COM4"), false);//InstantReplayStream(String::from("data/data85.csv"));
+    let active_clone = active_thread.clone();
 
     let mut writer: Writer<File> = Writer::from_writer(
             OpenOptions::new()
@@ -156,7 +155,17 @@ fn main() {
     let (tx_deque1, rx_deque1) = deque_channel(64);
     let (tx_time, rx_time) = deque_channel(64);
 
+
+
     thread::spawn(move || {
+        let mut writeport: Option<Box<dyn SerialPort>> = None;
+        if let InputStreams::PhotometryStream(_, outport, true) = active_clone {
+            writeport = Some(serialport::new(outport, 115200)
+                .timeout(Duration::from_millis(10))
+                .open()
+                .expect("Failed to administer stimulation to input port"));
+        }
+
         let mut zapper_timer = Instant::now();
         let mut ix: usize = 0;
         let mut sigma = 3.7;
@@ -203,9 +212,10 @@ fn main() {
             let (mut input_vec, nv1) = normalize_array(&v0, &v1);
             input_vec.extend(nv1);
             let input_data = Tensor::of_slice(&input_vec).unsqueeze(0).unsqueeze(2).to_kind(Kind::Float);
-            //println!("{:?}", input_vec);
+            //println!("{:?}
 
             match umodel.forward_ts(&[input_data]) {
+
                 Ok(output_data) => {
                     // The forward method was successful and returned a Tensor
                     //println!("Output data: ");
@@ -242,7 +252,10 @@ fn main() {
                             }
                             if *ttl_clone.lock().unwrap() {
                                 info!("Stimulation received after peak with reward {} and z-score {}", distance_scalar, zscore);
-                                //writeport.write(&['s' as u8]);
+                                if let Some(mut w) = writeport.as_mut() {
+                                    w.write(&['s' as u8]);
+                                }
+
                             }
                             else {
                                 warn!("Stimulation cannot be administered. TTL bit not received.")
@@ -264,7 +277,7 @@ fn main() {
         }
     });
 
-    match active_thread {
+    match active_thread.clone() {
         InputStreams::InstantReplayStream(file) => {
             thread::spawn(move || {
                 streams::instantreplay::start_instant_replay(file, tx, &tx_deque0, &tx_deque1, &tx_time, writer, &program_vars);
@@ -280,10 +293,10 @@ fn main() {
                 streams::ornstein::start_ornstein_stream(tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
             });
         }
-        InputStreams::PhotometryStream => {
+        InputStreams::PhotometryStream(inport, outport, useout) => {
             thread::spawn(move || {
                 // TODO: Make sure is_ttl is working
-                streams::photometry::start_photometry_stream(&String::from("COM4"), &String::from("COM5"), tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
+                streams::photometry::start_photometry_stream(&inport, tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
             });
         }
     }
