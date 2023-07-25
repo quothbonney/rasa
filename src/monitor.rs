@@ -78,12 +78,17 @@ impl Plots {
 
     pub fn show_rewards(&self, ui: &mut egui::Ui, measurements: &Arc<Mutex<MeasurementWindow>>) {
         let mut reward_plot = egui::plot::Plot::new("rewards").allow_drag(false);
-        reward_plot = reward_plot.include_y(300.0);
-        reward_plot = reward_plot.include_y(200.0);
-
+        reward_plot = reward_plot.include_y(0.0050);
+        //reward_plot = reward_plot.include_y(200.0);
+        //let series: PlotPoints = PlotPoints::new(measurements.lock().unwrap().rectpoints.clone());
+        let series: Vec<[f64; 2]> = vec![[0.0, 0.0], [100.0,0.1]];
         reward_plot.show(ui, |plot_ui| {
             add_plot_line!(plot_ui, egui::Color32::GOLD, measurements, 4);
+            let poly = Polygon::new(series);
+            plot_ui.polygon(poly);
         });
+
+
     }
 }
 

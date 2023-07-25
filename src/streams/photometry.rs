@@ -10,18 +10,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use csv::Writer;
 use std::fs::{File, OpenOptions};
 use std::io::BufRead;
-
+use crate::structs::RasaVariables;
+use std::sync::*;
 
 use crate::threadedchannel::{BoundedSender, deque_channel};
 use crate::util::*;
 
-pub fn start_photometry_stream(inport: &String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>) {
+pub fn start_photometry_stream(inport: &String, tx: Sender<[(f64, f64); 4]>, tx_deque0: &BoundedSender, tx_deque1: &BoundedSender, tx_time: &BoundedSender, mut writer: Writer<File>,is_ttl: Arc<Mutex<bool>>, vars: &Arc<RwLock<RasaVariables>>) {
     info!("Beginning Photometry stream on active thread");
     //let port = "COM3";
     let baud_rate = 115200;
 
     let mut ix = 1i32;
-    let skip = 40;
+    let skip = vars.read().unwrap().skip;
     let mut index = 1i32;
     let readport = serialport::new(inport, baud_rate)
         .timeout(Duration::from_millis(10))
@@ -77,7 +78,7 @@ pub fn start_photometry_stream(inport: &String, tx: Sender<[(f64, f64); 4]>, tx_
                     ];
 
                     tx.send(num).unwrap();
-                    if ix % skip == 0 {
+                    if ix % skip as i32 == 0 {
                         tx_deque0.send(y0 as f32);
                         tx_deque1.send(y1 as f32);
                         tx_time.send(elapsed as f32);

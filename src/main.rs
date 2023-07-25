@@ -118,13 +118,15 @@ fn main() {
     info!("{:?}", ports);
 
     let umodel : CModule;
-    match CModule::load("models/traced_model2.pt") {
+    match CModule::load("models/nested_model4.pt") {
         Ok(m) => {info!("Loaded torch model successfully"); umodel = m},
         Err(m) => {error!("Unable to load torch model. Aborting..."); panic!() }
     }
 
     // Data read/write channel
-    let active_thread = InputStreams::PhotometryStream(String::from("COM3"), String::from("COM4"), false);//InstantReplayStream(String::from("data/data85.csv"));
+    let active_thread =
+        //InputStreams::PhotometryStream(String::from("COM3"), String::from("COM4"), false);
+        InputStreams::InstantReplayStream(String::from("data/data85.csv"));
     let active_clone = active_thread.clone();
 
     let mut writer: Writer<File> = Writer::from_writer(
@@ -150,7 +152,7 @@ fn main() {
     let (tx, rx) = mpsc::channel();
     let (tx_reward, rx_reward) = mpsc::channel();
     // Custom VecDeque channels. Can be read from and written to without explicit locking
-    // Have size of 64. Designed so that when an element is added, another is popped. Pretty cool
+    // Have size of 64. Designed so that when an element is added, fanother is popped. Pretty cool
     let (tx_deque0, rx_deque0) = deque_channel(64);
     let (tx_deque1, rx_deque1) = deque_channel(64);
     let (tx_time, rx_time) = deque_channel(64);
@@ -181,6 +183,16 @@ fn main() {
                 let popped_element = vec_deque.pop_front();
             }
         }
+
+        let base_tens = Tensor::of_slice(&[ 0.12634977, -0.06141152, -0.04964269,  0.07968105, -0.04368583,
+            0.13546535,  0.07548738, -0.03056486,  0.06184907,  0.07327018,
+            0.01710543,  0.10000183,  0.0804975 , -0.01080727,  0.1048333 ,
+            0.12170962, -0.02461481, -0.05775008, -0.01931712, -0.07454138,
+            -0.04416006,  0.13611916, -0.07255794,  0.09354435,  0.02245703,
+            0.05057328, -0.09178815,  0.06281088, -0.03156299, -0.03452384,
+            -0.04695314,  0.17657361]);
+        //let weight = tens2.dist(&tens2).double_value(&[]);
+
         loop {
             let v0: Vec<f64> = rx_deque0.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
             let v1: Vec<f64> = rx_deque1.deque.lock().unwrap().clone().into_iter().map(|value| value as f64).collect();
@@ -212,6 +224,8 @@ fn main() {
             let (mut input_vec, nv1) = normalize_array(&v0, &v1);
             input_vec.extend(nv1);
             let input_data = Tensor::of_slice(&input_vec).unsqueeze(0).unsqueeze(2).to_kind(Kind::Float);
+            //input_data.print();
+
             //println!("{:?}
 
             match umodel.forward_ts(&[input_data]) {
@@ -219,14 +233,17 @@ fn main() {
                 Ok(output_data) => {
                     // The forward method was successful and returned a Tensor
                     //println!("Output data: ");
-                    let tens1: Tensor = output_data.mean_dim(1, false, Kind::Float);
+                    //let tens1: Tensor = output_data.mean_dim(1, false, Kind::Float);
                     //tens1.print();
                     // PEAK DETECTION TENSOR
                     let tens2 = Tensor::of_slice(&[-0.1309, -0.0426, -0.0295,  0.1515,  0.1200, -0.3180,  0.1198,  0.0594]);
-
-                    let distance = tens1.dist(&tens2);
-                    //tens1.print();
-                    let distance_scalar = 1.0/distance.double_value(&[]);
+                    let tens32 = Tensor::of_slice(&[-0.0007,  0.1063, -0.0803,  0.0755, -0.0697, -0.1071,  0.2100, -0.0241,
+                        -0.1550,  0.0149,  0.0137,  0.0195, -0.0449, -0.0128, -0.0764, -0.0304,
+                        0.0700,  0.0375,  0.0911,  0.2336,  0.0950,  0.0468, -0.0787,  0.0491,
+                        0.1544, -0.1593, -0.0150,  0.1328,  0.0511,  0.0159, -0.0860, -0.0134]);
+                    let distance = output_data.dist(&tens32);
+                    //println!("{:?}", output_data.size());
+                    let distance_scalar = distance.double_value(&[]);
                     vec_deque.push_back(distance_scalar);
                     vec_deque.pop_front();
                     //tens1.print();
@@ -271,7 +288,7 @@ fn main() {
                     error!("Error: {:?}", e);
                 }
             }
-            thread::sleep(Duration::from_millis(10));
+            //thread::sleep(Duration::from_millis(10));
             if ix == 0 { info!("Begun analysis thread successfuly") }
             ix += 1;
         }
@@ -296,7 +313,7 @@ fn main() {
         InputStreams::PhotometryStream(inport, outport, useout) => {
             thread::spawn(move || {
                 // TODO: Make sure is_ttl is working
-                streams::photometry::start_photometry_stream(&inport, tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl);
+                streams::photometry::start_photometry_stream(&inport, tx, &tx_deque0, &tx_deque1, &tx_time, writer, is_ttl, &program_vars);
             });
         }
     }

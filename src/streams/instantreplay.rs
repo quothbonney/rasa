@@ -77,7 +77,7 @@ pub fn start_instant_replay(file: String, tx: Sender<[(f64, f64); 4]>, tx_deque0
             vec.clear();
         }
         ix += 1;
-        sleep(Duration::from_millis(1));
+        sleep(Duration::from_micros(100));
     }
     /*
     let mut rdr = csv::Reader::from_reader(std::io::stdin());
